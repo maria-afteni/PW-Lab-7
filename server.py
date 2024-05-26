@@ -4,17 +4,37 @@ from flask_cors import CORS
 import jwt
 import datetime
 from functools import wraps
-from flask import send_from_directory
+import logging
 import os
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)  # Enable CORS for all routes and origins by default
 app.config['SECRET_KEY'] = 'your_secret_key'
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
 
 @app.after_request
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return response
+
+@app.errorhandler(500)
+def handle_500_error(e):
+    response = jsonify({'message': 'Internal Server Error', 'error': str(e)})
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return response, 500
+
+@app.route('/projects', methods=['OPTIONS'])
+@app.route('/projects/<int:project_id>', methods=['OPTIONS'])
+def handle_options(*args, **kwargs):
+    response = jsonify()
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     return response
 
@@ -28,10 +48,9 @@ users = {
     'user': {'password': 'user_pass', 'role': 'USER'},
 }
 
-
 # Swagger UI configuration
-SWAGGER_URL = '/docs'  # URL for accessing Swagger UI 
-API_URL = '/static/swagger.json'  # URL for accessing the API JSON file
+SWAGGER_URL = '/docs'
+API_URL = '/static/swagger.json'
 swaggerui_blueprint = get_swaggerui_blueprint(
     SWAGGER_URL,
     API_URL,
@@ -49,26 +68,26 @@ swaggerui_blueprint = get_swaggerui_blueprint(
 )
 app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
 
-
 def token_required(permissions=None):
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
-            token = None
-            if 'Authorization' in request.headers:
-                token = request.headers['Authorization'].split(" ")[1]
+            token = request.headers.get('Authorization', '').split("Bearer ")[-1]
             if not token:
                 return jsonify({'message': 'Token is missing!'}), 401
             try:
                 data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
                 current_role = data['role']
-            except:
+                logging.debug(f"JWT token decoded successfully. Role: {current_role}")
+            except Exception as e:
+                logging.error(f"JWT decode error: {e}")  # Log JWT decode errors
                 return jsonify({'message': 'Token is invalid or expired!'}), 401
             if permissions and current_role not in permissions:
                 return jsonify({'message': 'Not authorized!'}), 403
             return f(current_role, *args, **kwargs)
         return decorated_function
     return decorator
+
 
 @app.route('/token', methods=['POST'])
 def create_token():
@@ -85,7 +104,7 @@ def create_token():
 
     payload = {
         'role': user['role'],
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=1)
+        'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=30)
     }
     token = jwt.encode(payload, app.config['SECRET_KEY'], algorithm='HS256')
     return jsonify({'token': token}), 200
